@@ -1,79 +1,74 @@
 import streamlit as st
+import pandas as pd
 import numpy as np
 import joblib
 from tensorflow.keras.models import load_model
 
-# --- Load Models ---
-model = load_model("water_quality_ann.h5")
-iso_model = joblib.load("anomaly_model.pkl")
-scaler = joblib.load("scaler.pkl")
-
-# --- WHO Limits ---
-who_limits = {
-    'pH': (6.5, 8.5),
-    'TDS': (None, 1000),
-    'Hardness': (None, 500),
-    'EC_val': (None, 1500),
-    'DO': (5, None),
-    'Ecoli_Present': (0, 0),
-    'Salmonella_Present': (0, 0)
-}
-
-# --- UI ---
+st.set_page_config(page_title="Water Quality Monitor", page_icon="💧")
 st.title("💧 Smart Water Quality Analyzer")
-st.write("This app uses AI to assess physicochemical and microbial water safety based on WHO guidelines.")
+st.write("Upload your water test results to check safety based on WHO guidelines and AI prediction.")
 
-# Input Fields
-inputs = {}
-inputs['pH'] = st.number_input("pH", min_value=0.0, max_value=14.0, value=7.0)
-inputs['DO'] = st.number_input("Dissolved Oxygen (mg/L)", min_value=0.0, value=6.0)
-inputs['TDS'] = st.number_input("TDS (mg/L)", min_value=0.0, value=400.0)
-inputs['EC_val'] = st.number_input("Electrical Conductivity (μS/cm)", min_value=0.0, value=800.0)
-inputs['Temp'] = st.number_input("Temperature (°C)", min_value=0.0, value=25.0)
-inputs['Hardness'] = st.number_input("Hardness (mg/L as CaCO₃)", min_value=0.0, value=150.0)
-inputs['Ecoli_Present'] = 1 if st.selectbox("E. coli Detected?", ["No", "Yes"]) == "Yes" else 0
-inputs['Salmonella_Present'] = 1 if st.selectbox("Salmonella Detected?", ["No", "Yes"]) == "Yes" else 0
+# --- Upload CSVs ---
+phys_file = st.file_uploader("Upload Physical Parameter CSV", type=["csv"])
+bact_file = st.file_uploader("Upload Bacterial Test CSV", type=["csv"])
 
-# Feature Engineering
-hardness_safe = inputs['Hardness'] if inputs['Hardness'] > 0 else 0.1
-inputs['TDS_Hardness'] = inputs['TDS'] / hardness_safe
-inputs['DO_EC'] = inputs['DO'] * inputs['EC_val']
-inputs['pH_Deviation'] = abs(inputs['pH'] - 7)
-inputs['Bacteria_Load'] = inputs['Ecoli_Present'] + inputs['Salmonella_Present']
+if phys_file and bact_file:
+    phys_df = pd.read_csv(phys_file)
+    bact_df = pd.read_csv(bact_file)
+    st.success("✅ Files uploaded!")
 
-# Order of Inputs
-features_order = ['pH', 'DO', 'TDS', 'EC_val', 'Temp', 'Hardness',
-                  'Ecoli_Present', 'Salmonella_Present',
-                  'TDS_Hardness', 'DO_EC', 'pH_Deviation', 'Bacteria_Load']
+    # --- Preprocess Physical Data ---
+    try:
+        phys_df[['EC_val', 'Temp']] = phys_df['EC'].str.split('/', expand=True).astype(float)
+    except:
+        st.error("⚠️ Failed to split 'EC' column into EC_val and Temp. Please check format.")
 
-X = np.array([[inputs[f] for f in features_order]])
-X_scaled = scaler.transform(X)
+    # --- Merge Data ---
+    df = pd.merge(phys_df, bact_df, on="Sample", how="inner")
 
-# --- Prediction ---
-pred = model.predict(X_scaled)
-pred_class = np.argmax(pred)
-label_map = {0: "Poor", 1: "Moderate", 2: "Good"}
-st.subheader(f"💡 Predicted Water Quality: **{label_map[pred_class]}**")
+    # --- Clean column names just in case ---
+    df.columns = df.columns.str.strip()
 
-# --- WHO Compliance ---
-def check_who(values):
-    results = []
-    for param, (min_val, max_val) in who_limits.items():
-        val = values.get(param)
-        if min_val is not None and val < min_val:
-            results.append(f"🔻 {param} below WHO minimum ({min_val})")
-        if max_val is not None and val > max_val:
-            results.append(f"🔺 {param} exceeds WHO maximum ({max_val})")
-    return results or ["✅ Compliant with all WHO parameters"]
+    # --- WHO Checks ---
+    df["pH_Status"] = df["pH"].apply(lambda x: "✅ OK" if 6.5 <= x <= 8.5 else "⚠️ Out of Range")
+    df["TDS_Status"] = df["TDS"].apply(lambda x: "✅ OK" if x <= 1000 else "⚠️ High")
+    df["EC_Status"] = df["EC_val"].apply(lambda x: "✅ OK" if x <= 1400 else "⚠️ High")
 
-st.subheader("🧪 WHO Compliance Check")
-for msg in check_who(inputs):
-    st.write(msg)
+    # Handle missing coliform column gracefully
+    if "Coliform" in df.columns:
+        df["Coliform_Status"] = df["Coliform"].apply(lambda x: "✅ Safe" if x == 0 else "🚨 Unsafe")
+    else:
+        df["Coliform_Status"] = "⚠️ Missing"
+        st.warning("Column 'Coliform' not found. Skipping microbial safety check.")
 
-# --- Anomaly Detection ---
-anomaly = iso_model.predict(X_scaled)[0]
-if anomaly == -1:
-    st.error("⚠️ Anomaly Detected: This sample has unusual parameter patterns.")
+    # --- Load Model & Scaler ---
+    try:
+        model = load_model("water_quality_ann.h5")
+        scaler = joblib.load("scaler.pkl")
+        features = df[["EC_val", "Temp", "pH", "TDS"]]
+        scaled = scaler.transform(features)
+        prediction = model.predict(scaled)
+        df["Prediction"] = np.argmax(prediction, axis=1)
+        df["Interpretation"] = df["Prediction"].map({0: "Good", 1: "Moderate", 2: "Poor"})
+        st.success("🎯 AI prediction complete!")
+    except Exception as e:
+        st.error(f"❌ Model or scaler failed to load: {e}")
+        df["Interpretation"] = "Unavailable"
+
+    # --- Display Results ---
+    st.subheader("📋 Full Analysis")
+    st.dataframe(df[[
+        "Sample", "pH", "pH_Status", "TDS", "TDS_Status", 
+        "EC_val", "EC_Status", "Coliform_Status", "Interpretation"
+    ]])
+
+    # --- Safety Summary ---
+    if "🚨 Unsafe" in df["Coliform_Status"].values:
+        st.error("⚠️ Microbial contamination detected in one or more samples.")
+    elif "⚠️ Out of Range" in df["pH_Status"].values or "⚠️ High" in df["TDS_Status"].values or "⚠️ High" in df["EC_Status"].values:
+        st.warning("⚠️ Some physico-chemical values exceed WHO guidelines.")
+    else:
+        st.success("✅ All parameters within WHO safety thresholds.")
 else:
-    st.success("✅ No anomaly detected.")
+    st.info("📂 Please upload both Physical and Bacterial CSV files to begin.")
 
