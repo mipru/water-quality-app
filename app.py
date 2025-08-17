@@ -7,7 +7,7 @@ from tensorflow.keras.models import load_model
 
 st.set_page_config(page_title="Water Quality Analyzer", page_icon="💧")
 st.title("💧 Water Safety Dashboard")
-st.write("Upload your test results to evaluate safety using WHO guidelines and AI predictions.")
+st.write("Evaluate water safety using WHO guidelines and AI predictions.")
 
 # 🧠 Educational Section
 with st.expander("ℹ️ WHO Guidelines & Key Indicators"):
@@ -20,23 +20,54 @@ with st.expander("ℹ️ WHO Guidelines & Key Indicators"):
     - **DO (Dissolved Oxygen)**: >6 mg/L preferred for freshness  
     """)
 
-# Upload CSVs
-phys_file = st.file_uploader("Upload Physical Parameter CSV", type=["csv"])
-bact_file = st.file_uploader("Upload Bacterial Test CSV", type=["csv"])
+# ---------------- Mode Selection ----------------
+mode = st.radio("📌 Select Data Entry Mode", ["Upload CSV Files", "Manual Input"])
 
-if phys_file and bact_file:
-    phys_df = pd.read_csv(phys_file)
-    bact_df = pd.read_csv(bact_file)
-    st.success("✅ Files uploaded!")
+if mode == "Upload CSV Files":
+    # Upload CSVs
+    phys_file = st.file_uploader("Upload Physical Parameter CSV", type=["csv"])
+    bact_file = st.file_uploader("Upload Bacterial Test CSV", type=["csv"])
 
-    # Split EC into EC_val and Temp
-    try:
-        phys_df[['ec_val', 'temp']] = phys_df['EC'].str.split('/', expand=True).astype(float)
-    except Exception:
-        st.error("⚠️ Unable to split 'EC'. Please ensure it's in 'value/temp' format (e.g., '1400/25').")
+    if phys_file and bact_file:
+        phys_df = pd.read_csv(phys_file)
+        bact_df = pd.read_csv(bact_file)
+        st.success("✅ Files uploaded!")
 
-    # Merge data
-    df = pd.merge(phys_df, bact_df, on="Sample", how="inner")
+        # Split EC into EC_val and Temp
+        try:
+            phys_df[['ec_val', 'temp']] = phys_df['EC'].str.split('/', expand=True).astype(float)
+        except Exception:
+            st.error("⚠️ Unable to split 'EC'. Please ensure it's in 'value/temp' format (e.g., '1400/25').")
+
+        # Merge data
+        df = pd.merge(phys_df, bact_df, on="Sample", how="inner")
+
+    else:
+        df = None
+
+elif mode == "Manual Input":
+    st.info("Enter water quality parameters for a single sample:")
+    pH = st.number_input("pH", 0.0, 14.0, step=0.01)
+    ec_val = st.number_input("Electrical Conductivity (µS/cm)", 0.0, step=1.0)
+    temp = st.number_input("Temperature (°C)", 0.0, 100.0, step=0.1)
+    tds = st.number_input("TDS (mg/L)", 0.0, step=1.0)
+    hardness = st.number_input("Hardness (mg/L as CaCO3)", 0.0, step=1.0)
+    do = st.number_input("Dissolved Oxygen (mg/L)", 0.0, step=0.1)
+    coliform = st.selectbox("Coliform presence", ["No", "Yes"])
+
+    df = pd.DataFrame({
+        "sample": ["ManualEntry1"],
+        "ph": [pH],
+        "ec_val": [ec_val],
+        "temp": [temp],
+        "tds": [tds],
+        "hardness": [hardness],
+        "do": [do],
+        "coliform": [0 if coliform == "No" else 1]
+    })
+
+# ---------------- Process if Data Available ----------------
+if df is not None and not df.empty:
     df.columns = df.columns.str.strip().str.lower()
 
     # WHO Checks
@@ -48,9 +79,6 @@ if phys_file and bact_file:
         df["ec_status"] = df["ec_val"].apply(lambda x: "✅ OK" if x <= 400 else "⚠️ High")
     if 'coliform' in df.columns:
         df["coliform_status"] = df["coliform"].apply(lambda x: "✅ Safe" if x == 0 else "🚨 Unsafe")
-    else:
-        df["coliform_status"] = "⚠️ Missing"
-
     if "hardness" in df.columns:
         df["hardness_status"] = df["hardness"].apply(
             lambda x: "💧 Soft" if x <= 60 else
@@ -58,13 +86,8 @@ if phys_file and bact_file:
                       "🪨 Hard" if x <= 180 else
                       "⚠️ Very Hard"
         )
-    else:
-        df["hardness_status"] = "⚠️ Missing"
-
     if "do" in df.columns:
         df["do_status"] = df["do"].apply(lambda x: "✅ Good" if x >= 6 else "⚠️ Low")
-    else:
-        df["do_status"] = "⚠️ Missing"
 
     # AI prediction
     try:
@@ -103,7 +126,7 @@ if phys_file and bact_file:
     pie_chart("do_status", "Dissolved Oxygen")
 
     # Advisory
-    if "🚨 Unsafe" in df["coliform_status"].values:
+    if "🚨 Unsafe" in df.get("coliform_status", []):
         st.error("🚨 Coliform bacteria detected!")
         with st.warning("💡 Boiling Water Advisory"):
             st.markdown("""
@@ -125,7 +148,10 @@ if phys_file and bact_file:
             st.markdown(f"**{col.replace('_status','').upper()}**: {safe/total*100:.1f}% samples within acceptable range.")
 
 else:
-    st.info("📂 Please upload both Physical and Bacterial CSV files to continue.")
+    if mode == "Upload CSV Files":
+        st.info("📂 Please upload both Physical and Bacterial CSV files to continue.")
+
+
 
 
 
