@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import joblib
 import matplotlib.pyplot as plt
+import time
 from tensorflow.keras.models import load_model
 
 st.set_page_config(page_title="Water Quality Analyzer", page_icon="💧")
@@ -20,28 +21,39 @@ with st.expander("ℹ️ WHO Guidelines & Key Indicators"):
     - **DO (Dissolved Oxygen)**: >6 mg/L preferred for freshness  
     """)
 
+# ---------------- Caching Functions ----------------
+@st.cache_resource
+def load_model_cached():
+    return load_model("water_quality_ann.h5")
+
+@st.cache_resource
+def load_scaler_cached():
+    return joblib.load("scaler.pkl")
+
+@st.cache_data
+def read_csv_cached(file):
+    return pd.read_csv(file)
+
 # ---------------- Mode Selection ----------------
 mode = st.radio("📌 Select Data Entry Mode", ["Upload CSV Files", "Manual Input"])
 
 if mode == "Upload CSV Files":
-    # Upload CSVs
     phys_file = st.file_uploader("Upload Physical Parameter CSV", type=["csv"])
     bact_file = st.file_uploader("Upload Bacterial Test CSV", type=["csv"])
 
     if phys_file and bact_file:
-        phys_df = pd.read_csv(phys_file)
-        bact_df = pd.read_csv(bact_file)
+        start = time.time()
+        phys_df = read_csv_cached(phys_file)
+        bact_df = read_csv_cached(bact_file)
         st.success("✅ Files uploaded!")
 
-        # Split EC into EC_val and Temp
         try:
             phys_df[['ec_val', 'temp']] = phys_df['EC'].str.split('/', expand=True).astype(float)
         except Exception:
             st.error("⚠️ Unable to split 'EC'. Please ensure it's in 'value/temp' format (e.g., '1400/25').")
 
-        # Merge data
         df = pd.merge(phys_df, bact_df, on="Sample", how="inner")
-
+        st.write(f"⏱️ Data processing time: {time.time() - start:.2f} seconds")
     else:
         df = None
 
@@ -91,14 +103,16 @@ if df is not None and not df.empty:
 
     # AI prediction
     try:
-        model = load_model("water_quality_ann.h5")
-        scaler = joblib.load("scaler.pkl")
+        start = time.time()
+        model = load_model_cached()
+        scaler = load_scaler_cached()
         features = df[["ec_val", "temp", "ph", "tds"]]
         X_scaled = scaler.transform(features)
         prediction = model.predict(X_scaled)
         df["prediction"] = np.argmax(prediction, axis=1)
         df["interpretation"] = df["prediction"].map({0: "Good", 1: "Moderate", 2: "Poor"})
         st.success("🧠 AI predictions generated!")
+        st.write(f"⏱️ Prediction time: {time.time() - start:.2f} seconds")
     except Exception as e:
         st.warning(f"⚠️ Model/scaler issue: {e}")
         df["interpretation"] = "Unavailable"
@@ -150,6 +164,8 @@ if df is not None and not df.empty:
 else:
     if mode == "Upload CSV Files":
         st.info("📂 Please upload both Physical and Bacterial CSV files to continue.")
+
+
 
 
 
